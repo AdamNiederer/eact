@@ -1,0 +1,7 @@
+* eact
+The goal: React-like TUI rendering for emacs
+
+What currently works: Rendering a subset of HTML with overlays
+What doesn't work: Interpolation, state, styling, interaction...
+
+More coming hopefully soon.
