@@ -27,80 +27,51 @@
 
 ;;; Code:
 
-(require 'elquery)
+(require 'cl-lib)
 (require 'dash)
+(require 's)
+(require 'ol)
+(require 'elquery)
 
-;; TODO: Track all overlays
-(defvar eact-root-ol nil)
+(defvar eact-ols #s(hash-table size 300 rehash-size 4.0))
 
-(defmacro fncase (fn expr &rest match-bodies)
-  "Exactly like `case', but compares with FN; Match EXPR against MATCH-BODIES."
-  (declare (indent 1))
-  `(cond
-    ,@(-map (lambda (match-body)
-              `(,(cond
-                  ((listp (car match-body))
-                   `(or ,@(-map (lambda (match) `(funcall ,fn ,match ,expr)) (car match-body))))
-                  ((equal (car match-body) 't) t)
-                  (t `(funcall ,fn ,(car match-body) ,expr)))
-                (progn
-                  ,@(cdr match-body))))
-            match-bodies)))
+(defun eact--keymap (keylist)
+  "Make a keymap mapping even entries to odd entries from KEYLIST."
+  (let ((map (make-sparse-keymap)))
+    (dolist (item (-partition 2 keylist))
+      (define-key map (kbd (car item))
+        (lambda () (interactive) (funcall-interactively (cadr item)))))
+    map))
 
-;; (macroexpand '(fncase 'equal 2 ((1 2 3) 2) (t 'kek)))
+(defun eact--render-cmd (cmd)
+  "Insert text and create overlays in the current buffer as described in CMD."
+  (let ((overlay (make-overlay (point) (progn (insert (car cmd)) (point)))))
+    (overlay-put overlay 'face (plist-get (cdr cmd) :face))
+    (overlay-put overlay 'keymap (eact--keymap (plist-get (cdr cmd) :keymap)))
+    (overlay-put overlay 'read-only t)
+    (puthash (point) overlay (gethash (buffer-name) eact-ols))))
 
-(defun eact-render-el-pre (start tree)
-  "Render the element at START heading TREE's prefix."
-  (fncase #'equal (elquery-el tree)
-    ("div" (save-excursion (goto-char start) (insert "\n") (point)))
-    (t start)))
+(defun eact--render-row (row)
+  "Renders ROW on one line of the current buffer."
+  (dolist (cmd row)
+    (cond
+     ((stringp cmd) (eact--render-cmd (list cmd)))
+     ((listp cmd) (eact--render-cmd cmd)))))
 
-(defun eact-render-el-post (start tree)
-  "Render the element at START heading TREE's postfix."
-  (fncase #'equal (elquery-el tree)
-    ("div" (save-excursion (goto-char start) (insert "\n") (point)))
-    (t start)))
-
-(defun eact-render-tree (start tree)
-  "START TREE."
-  (save-excursion
-    (if (elquery-el tree)
-        (eact-render-ol
-         tree start
-         (eact-render-el-post
-          (--reduce
-           (let ((ol-or-pos (eact-render-tree acc it)))
-             (if (overlayp ol-or-pos) (overlay-end ol-or-pos) ol-or-pos))
-           (cons (eact-render-el-pre start tree) (elquery-children tree)))
-          tree))
-      (progn (goto-char start)
-             (insert (elquery-text tree))
-             (point)))))
-
-(defun eact-render-ol (tree start end)
-  "TREE START END."
-  (let ((ol (make-overlay start end)))
-    ;; (overlay-put ol 'face '(:background "#00ffff" :height 1.5))
-    ;; (overlay-put ol 'read-only t)
-    ol))
-
-(defun eact-render (buffer start template)
-  "BUFFER START TEMPLATE."
+(defun eact-render (buffer template)
+  "Renders TEMPLATE into BUFFER."
   (with-current-buffer buffer
-    (let ((tree (car (elquery-$ "template" (elquery-read-string template)))))
-      (when eact-root-ol
-        (when (overlay-start eact-root-ol)
-          (delete-region (overlay-start eact-root-ol)
-                         (overlay-end eact-root-ol)))
-        (delete-overlay eact-root-ol)
-        (delete-all-overlays)
-        (setq eact-root-ol nil))
-      (save-excursion
-        (goto-char start)
-        (setq eact-root-ol (eact-render-tree start tree))))))
-
-;; (eact-render (get-buffer-create "*eact*") (point-min)
-;;              "<template @kek=\"bur\">hello!<div>world<asdf/>...</div>asdfu&#10;&#13;</template>")
+    (let ((inhibit-read-only t))
+      (when-let ((buffer-ols (gethash (buffer-name) eact-ols)))
+        (dolist (point (hash-table-keys buffer-ols))
+          (delete-overlay (gethash point buffer-ols))
+          (remhash point buffer-ols)))
+      (remhash (buffer-name) eact-ols)
+      (puthash (buffer-name) #s(hash-table size 300 rehash-size 4.0) eact-ols)
+      (erase-buffer)
+      (dolist (row template)
+        (eact--render-row row)
+        (insert "\n")))))
 
 (provide 'eact)
 
