@@ -5,7 +5,7 @@
 ;; Author: Adam Niederer <adam.niederer@gmail.com>
 ;; Keywords: tools maint lisp hypermedia
 
-;; Version: 0.0.1
+;; Version: 0.0.2
 ;; Package-Requires: ((elquery "0.1.0") (dash "2.13.0"))
 
 ;; This program is free software; you can redistribute it and/or modify
@@ -33,7 +33,7 @@
 (require 'ol)
 (require 'elquery)
 
-(defvar eact-ols #s(hash-table size 300 rehash-size 4.0))
+(defvar eact-ols #s(hash-table size 300 rehash-size 4.0 test equal))
 
 (defun eact--keymap (keylist)
   "Make a keymap mapping even entries to odd entries from KEYLIST."
@@ -43,20 +43,33 @@
         (lambda () (interactive) (funcall-interactively (cadr item)))))
     map))
 
-(defun eact--render-cmd (cmd)
-  "Insert text and create overlays in the current buffer as described in CMD."
-  (let ((overlay (make-overlay (point) (progn (insert (car cmd)) (point)))))
-    (overlay-put overlay 'face (plist-get (cdr cmd) :face))
-    (overlay-put overlay 'keymap (eact--keymap (plist-get (cdr cmd) :keymap)))
-    (overlay-put overlay 'read-only t)
+(defun eact--render-node (props render)
+  "Call RENDER and style its insertions with an overlay according to PROPS."
+  (let ((overlay (make-overlay (point) (progn (funcall render) (point)))))
+    (-let (((&plist :face :keymap :hover) props))
+      (overlay-put overlay 'face face)
+      (overlay-put overlay 'mouse-face hover)
+      (overlay-put overlay 'keymap (eact--keymap keymap))
+      (overlay-put overlay 'read-only t)
+      (overlay-put overlay 'cursor-sensor-functions (list (lambda (_ _ entered) (overlay-put overlay 'face (if (and hover (equal entered 'entered)) hover face))))))
     (puthash (point) overlay (gethash (buffer-name) eact-ols))))
 
-(defun eact--render-row (row)
-  "Renders ROW on one line of the current buffer."
-  (dolist (cmd row)
-    (cond
-     ((stringp cmd) (eact--render-cmd (list cmd)))
-     ((listp cmd) (eact--render-cmd cmd)))))
+(defun eact--render-tree (tree)
+  "Renders TREE if it's not an overlay, or renders its contents if it is."
+  (cond
+   ((stringp tree) ;; Base node; just insert it
+    (insert tree))
+   ((numberp tree) ;; Base node; convert and insert
+    (insert (number-to-string tree)))
+   ;; tree is assumed to be a list at this point
+   ((stringp (car tree)) ;; Row node; insert all children, then "\n"
+    (progn (--each tree (eact--render-tree it)) (insert "\n")))
+   ;; (car tree) is assumed to be a list at this point
+   ((keywordp (caar tree)) ;; Overlay; render subtree with style
+    (eact--render-node (car tree) (lambda () (-each (cdr tree) #'eact--render-tree))))
+   ;; (caar tree) is assumed to be a list at this point
+   ((listp (caar tree)) ;; Row node with overlay; same as raw row node
+    (progn (--each tree (eact--render-tree it)) (insert "\n")))))
 
 (defun eact-render (buffer template)
   "Renders TEMPLATE into BUFFER."
@@ -67,11 +80,13 @@
           (delete-overlay (gethash point buffer-ols))
           (remhash point buffer-ols)))
       (remhash (buffer-name) eact-ols)
-      (puthash (buffer-name) #s(hash-table size 300 rehash-size 4.0) eact-ols)
+      (puthash (buffer-name) (make-hash-table :size 300 :rehash-size 4.0 :test #'equal)
+               eact-ols)
       (erase-buffer)
-      (dolist (row template)
-        (eact--render-row row)
-        (insert "\n")))))
+      (dolist (tree template)
+        (eact--render-tree tree))
+      (special-mode)
+      (cursor-sensor-mode))))
 
 (provide 'eact)
 
